@@ -3,7 +3,7 @@ services:
     name: vendor-saas-licensing
     runtime: node
     buildCommand: npm install --include=dev && npx prisma generate && npm run build
-    startCommand: node server.js
+    startCommand: npm run start
     envVars:
       - key: DATABASE_URL
         sync: false
