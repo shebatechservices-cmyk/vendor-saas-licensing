@@ -6,7 +6,8 @@ export const revalidate = 0;
 
 export async function GET(
   req: NextRequest,
-  { params }: { params: { clientId: string } }
+  { params }: { params: Promise<{ clientId: string }> }
 ) {
-  return LedgerController.getClientStatement(params.clientId);
+  const { clientId } = await params;
+  return LedgerController.getClientStatement(clientId);
 }

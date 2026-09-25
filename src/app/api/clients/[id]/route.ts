@@ -6,21 +6,24 @@ export const revalidate = 0;
 
 export async function GET(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
-  return ClientController.getClientById(params.id);
+  const { id } = await params;
+  return ClientController.getClientById(id);
 }
 
 export async function PUT(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
-  return ClientController.updateClient(params.id, req);
+  const { id } = await params;
+  return ClientController.updateClient(id, req);
 }
 
 export async function DELETE(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
-  return ClientController.deleteClient(params.id);
+  const { id } = await params;
+  return ClientController.deleteClient(id);
 }

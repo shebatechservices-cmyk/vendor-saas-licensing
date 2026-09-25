@@ -6,7 +6,8 @@ export const revalidate = 0;
 
 export async function POST(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
-  return ClientController.toggleClientStatus(params.id, req);
+  const { id } = await params;
+  return ClientController.toggleClientStatus(id, req);
 }
