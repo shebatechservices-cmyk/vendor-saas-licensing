@@ -1,0 +1,87 @@
+model LicenseCode {
+  id                String           @id @default(cuid())
+  code              String           @unique // e.g. SAAS-7K9P-4M2X-8W1Q
+  category          String           @default("APP_LICENSE") // APP_LICENSE, HOSTING_RENEWAL, DOMAIN_RENEWAL, STUDENT_QUOTA_UPGRADE
+  validityType      String           @default("YEARS_1") // YEARS_1 to YEARS_12, LIFETIME, QUOTA_CREDITS
+  validityYears     Int?             // 1 to 12 (null if Lifetime or Quota)
+  isLifetime        Boolean          @default(false)
+  
+  // Quota Specific (for STUDENT_QUOTA_UPGRADE)
+  quotaCredits      Int?             // e.g. 1000 credits
+  studentQuotaAdded Int?             // e.g. 100 students (10 credits = 1 student)
+  
+  // Financial & Pricing
+  priceBdt          Float            @default(0.0) // 1000 credits = 2000 BDT
+  
+  // Lifecycle Status
+  status            String           @default("AVAILABLE") // AVAILABLE, ASSIGNED, USED, REVOKED, EXPIRED
+  batchId           String?
+  batch             BatchGeneration? @relation(fields: [batchId], references: [id], onDelete: SetNull)
+  
+  // Assignment & Redemption
+  assignedClientId  String?
+  assignedClient    Client?          @relation("AssignedClient", fields: [assignedClientId], references: [id], onDelete: SetNull)
+  
+  redeemedClientId  String?
+  redeemedClient    Client?          @relation("RedeemedClient", fields: [redeemedClientId], references: [id], onDelete: SetNull)
+  redeemedAt        DateTime?
+  redeemedByIp      String?
+  
+  // Optional expiry of the code itself before activation
+  expiresAt         DateTime?
+  note              String?
+  
+  ledgerEntries     VendorLedger[]
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+
+  @@index([code])
+  @@index([status])
+  @@index([category])
+  @@index([batchId])
+}
+
+model BatchGeneration {
+  id                String        @id @default(cuid())
+  batchNumber       String        @unique // e.g. BATCH-202609-001
+  name              String        // e.g. Madrasa 2026 Batch Quotas
+  category          String        // APP_LICENSE, HOSTING_RENEWAL, DOMAIN_RENEWAL, STUDENT_QUOTA_UPGRADE
+  validityType      String        // YEARS_1 to YEARS_12, LIFETIME, QUOTA_CREDITS
+  validityYears     Int?
+  isLifetime        Boolean       @default(false)
+  
+  quotaCredits      Int?
+  studentQuotaAdded Int?
+  
+  quantity          Int
+  priceBdtPerUnit   Float
+  totalValueBdt     Float
+  
+  codes             LicenseCode[]
+  generatedBy       String        @default("Vendor Admin")
+  notes             String?
+  createdAt         DateTime      @default(now())
+
+  @@index([batchNumber])
+  @@index([category])
+}
+
+model License {
+  id             String    @id @default(cuid())
+  client_name    String
+  license_key    String    @unique // e.g. VEND-XXXX-XXXX-XXXX-XXXX
+  mac_address    String?
+  expiry_date    DateTime?
+  status         String    @default("Active") // Active, Suspended, Expired, Blocked
+  last_heartbeat DateTime?
+  last_sync      DateTime?
+  live_status    String?   @default("OFFLINE") // ONLINE, OFFLINE, WARNING, BLOCKED
+  ip_address     String?
+  app_version    String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([license_key])
+  @@index([status])
+  @@index([client_name])
+}

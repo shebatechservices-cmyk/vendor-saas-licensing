@@ -1,0 +1,79 @@
+model Client {
+  id                  String         @id @default(cuid())
+  clientCode          String         @unique // e.g. CLI-MADRASA-001
+  name                String         // Institution name / Organization
+  contactPerson       String?
+  email               String?
+  phone               String?
+  domain              String?        // e.g. madrasa1.edu.bd
+  appType             String         @default("Madrasa/School Management")
+  status              String         @default("ACTIVE") // ACTIVE, BLOCKED, SUSPENDED, EXPIRED, PENDING
+  secretKey           String         @unique // API secret for client auth & remote calls
+  
+  // Licensing & Validity
+  licenseCategory     String         @default("APP_LICENSE") // APP_LICENSE, HOSTING_RENEWAL, DOMAIN_RENEWAL, STUDENT_QUOTA_UPGRADE, TRIAL
+  isLifetime          Boolean        @default(false)
+  isTrial             Boolean        @default(false)
+  trialEndsAt         DateTime?
+  gracePeriodHours    Int            @default(48) // 48-hour offline grace period before suspension
+  licenseExpiresAt    DateTime?
+  hostingExpiresAt    DateTime?
+  domainExpiresAt     DateTime?
+  
+  // Quota & Limits
+  studentQuota        Int            @default(200) // Default baseline student limit
+  storageQuotaGb      Float          @default(5.0)
+  
+  // Security & 2FA / IP Whitelist
+  two_factor_secret   String?
+  two_factor_enabled  Boolean        @default(false)
+  allowed_ips         String?
+  
+  // Live Tracking / Heartbeat
+  lastHeartbeatAt     DateTime?
+  last_sync           DateTime?
+  live_status         String?        @default("OFFLINE") // ONLINE, OFFLINE, WARNING, BLOCKED
+  lastPingIp          String?
+  lastAppVersion      String?
+  lastStatusReported  String?
+  isOnline            Boolean        @default(false)
+  
+  // Relations
+  assignedCodes       LicenseCode[]  @relation("AssignedClient")
+  redeemedCodes       LicenseCode[]  @relation("RedeemedClient")
+  ledgerEntries       VendorLedger[]
+  heartbeats          HeartbeatLog[]
+  quotas              AppQuota?
+  
+  metadata            String?        // JSON formatted extra configs / client params
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+
+  @@index([status])
+  @@index([clientCode])
+  @@index([isTrial])
+}
+
+model AppQuota {
+  id                    String         @id @default(cuid())
+  clientId              String         @unique
+  client                Client         @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  
+  // Student Quotas
+  baseStudents          Int            @default(200)
+  extraStudents         Int            @default(0)
+  totalStudents         Int            @default(200)
+  usedStudents          Int            @default(0)
+  
+  // Credit & Financials
+  totalCreditsPurchased Int            @default(0)
+  totalCreditsUsed      Int            @default(0)
+  availableCredits      Int            @default(0)
+  
+  // Features / Addons
+  smsCredits            Int            @default(0)
+  storageMb             Int            @default(5120) // 5GB
+  
+  lastUpdated           DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
+}

@@ -1,0 +1,25 @@
+model VendorLedger {
+  id                String          @id @default(cuid())
+  clientId          String
+  client            Client          @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  
+  transactionType   String          // BILLING, REDEMPTION, PAYMENT, ADJUSTMENT
+  amountBdt         Float           // Positive for billings/dues, negative for payments received
+  creditAmount      Float           @default(0.0) // Amount paid/credited
+  debitAmount       Float           @default(0.0) // Amount billed/debited
+  runningBalanceBdt Float           @default(0.0) // Positive = client owes money (Due)
+  
+  description       String
+  referenceCodeId   String?
+  referenceCode     LicenseCode?    @relation(fields: [referenceCodeId], references: [id], onDelete: SetNull)
+  
+  paymentMethod     String?         // bKash, Nagad, Bank Transfer, Cash, Pre-paid Code
+  receiptNumber     String?
+  performedBy       String?         @default("SYSTEM")
+  
+  createdAt         DateTime        @default(now())
+
+  @@index([clientId])
+  @@index([transactionType])
+  @@index([createdAt])
+}

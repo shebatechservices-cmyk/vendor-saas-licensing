@@ -1,0 +1,18 @@
+model HeartbeatLog {
+  id                  String         @id @default(cuid())
+  clientId            String
+  client              Client         @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  
+  ipAddress           String?
+  appVersion          String?
+  domainReported      String?
+  statusReported      String?        // Reported internal status by client app
+  activeStudentsCount Int?
+  databaseSizeMb      Float?
+  
+  responseDirectives  String?        // JSON containing directives sent back (e.g. KILLSWITCH, SYNC_QUOTA)
+  createdAt           DateTime       @default(now())
+
+  @@index([clientId])
+  @@index([createdAt])
+}

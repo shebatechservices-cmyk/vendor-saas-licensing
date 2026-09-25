@@ -1,0 +1,48 @@
+model AdminUser {
+  id                     String    @id @default(cuid())
+  email                  String    @unique
+  name                   String    @default("Vendor Administrator")
+  passwordHash           String
+  
+  // Multi-Factor Authentication (2FA / 3FA)
+  two_factor_secret      String?
+  two_factor_enabled     Boolean   @default(false)
+  two_factor_temp_secret String?   // Temporary secret during setup before verification
+  
+  // 3rd Verification Layer: IP Whitelisting
+  allowed_ips            String?   @default("127.0.0.1,::1,localhost") // Comma-separated or JSON list of authorized IPs/CIDRs
+  ip_whitelist_enabled   Boolean   @default(false)
+  
+  // Backup & Recovery OTPs
+  backup_codes           String?   // JSON array of hashed recovery codes
+  
+  // SMS 2FA Support
+  phone                  String?   @default("+8801700000000")
+  phone_verified         Boolean   @default(false)
+  sms_otp_code           String?
+  sms_otp_expires_at     DateTime?
+  preferred_2fa_method   String    @default("totp") // "totp" | "sms"
+  
+  lastLoginAt            DateTime?
+  lastLoginIp            String?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  @@index([email])
+}
+
+model SecurityAlert {
+  id          String   @id @default(cuid())
+  type        String   // FAILED_2FA, UNAUTHORIZED_IP, HARDWARE_MISMATCH, INVALID_CREDENTIALS, KILLSWITCH_TRIGGERED
+  severity    String   @default("HIGH") // CRITICAL, HIGH, MEDIUM, LOW
+  title       String
+  description String
+  ipAddress   String?
+  clientCode  String?
+  resolved    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  @@index([type])
+  @@index([createdAt])
+  @@index([resolved])
+}
