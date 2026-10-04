@@ -813,27 +813,39 @@ export class LicenseController {
   static async redeemCode(req: NextRequest) {
     try {
       const body = await req.json().catch(() => ({}));
-      const { code, clientId, client_app_id } = body;
-      const targetClientId = clientId || client_app_id;
+      const rawCode =
+        body.code ||
+        body.license_key ||
+        body.licenseKey ||
+        body.key ||
+        body.activation_code ||
+        body.activationCode ||
+        body.token;
+      const targetClientId = body.clientId || body.client_app_id || body.clientCode;
 
       console.log("[Vendor Controller] Received Redeem Request:", {
-        code,
+        code: rawCode,
         clientId: targetClientId,
         timestamp: new Date().toISOString(),
       });
 
-      if (!code || String(code).trim().length < 4) {
-        console.warn("[Vendor Controller] Empty or too short code received:", code);
+      if (!rawCode || String(rawCode).trim().length < 4) {
+        console.warn("[Vendor Controller] Empty or too short code received:", rawCode);
         return NextResponse.json({ success: false, error: "Please provide a valid code" }, { status: 400 });
       }
 
-      const cleanCode = String(code).trim().toUpperCase();
+      const cleanCode = String(rawCode).trim().toUpperCase();
       const clientIp = req.headers.get("x-forwarded-for") || "127.0.0.1";
       const now = new Date();
 
       // 1. Search in LicenseCode table (pre-generated vouchers & renewal codes)
-      const licenseCode = await prisma.licenseCode.findUnique({
-        where: { code: cleanCode },
+      const licenseCode = await prisma.licenseCode.findFirst({
+        where: {
+          OR: [
+            { code: cleanCode },
+            { code: { equals: cleanCode, mode: "insensitive" } },
+          ],
+        },
       });
 
       if (licenseCode) {

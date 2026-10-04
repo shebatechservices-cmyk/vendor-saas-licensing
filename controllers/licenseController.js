@@ -567,20 +567,32 @@ async function heartbeat(req, res) {
 async function redeemCode(req, res) {
   try {
     const body = req.body || {};
-    const { code, clientId, client_app_id } = body;
-    const targetClientId = clientId || client_app_id;
+    const rawCode =
+      body.code ||
+      body.license_key ||
+      body.licenseKey ||
+      body.key ||
+      body.activation_code ||
+      body.activationCode ||
+      body.token;
+    const targetClientId = body.clientId || body.client_app_id || body.clientCode;
 
-    if (!code || String(code).trim().length < 4) {
+    if (!rawCode || String(rawCode).trim().length < 4) {
       return res.status(400).json({ success: false, error: "Please provide a valid code" });
     }
 
-    const cleanCode = String(code).trim().toUpperCase();
-    const clientIp = (req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "127.0.0.1").split(",")[0].trim();
+    const cleanCode = String(rawCode).trim().toUpperCase();
+    const clientIp = ((req.headers && req.headers["x-forwarded-for"]) || req.socket?.remoteAddress || "127.0.0.1").split(",")[0].trim();
     const now = new Date();
 
     // 1. Search in LicenseCode table
-    const licenseCode = await prisma.licenseCode.findUnique({
-      where: { code: cleanCode },
+    const licenseCode = await prisma.licenseCode.findFirst({
+      where: {
+        OR: [
+          { code: cleanCode },
+          { code: { equals: cleanCode, mode: "insensitive" } },
+        ],
+      },
     });
 
     if (licenseCode) {
