@@ -564,10 +564,154 @@ async function heartbeat(req, res) {
   }
 }
 
+async function redeemCode(req, res) {
+  try {
+    const body = req.body || {};
+    const { code, clientId, client_app_id } = body;
+    const targetClientId = clientId || client_app_id;
+
+    if (!code || String(code).trim().length < 4) {
+      return res.status(400).json({ success: false, error: "Please provide a valid code" });
+    }
+
+    const cleanCode = String(code).trim().toUpperCase();
+    const clientIp = (req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "127.0.0.1").split(",")[0].trim();
+    const now = new Date();
+
+    // 1. Search in LicenseCode table
+    const licenseCode = await prisma.licenseCode.findUnique({
+      where: { code: cleanCode },
+    });
+
+    if (licenseCode) {
+      if (licenseCode.status === "USED") {
+        return res.status(400).json({ success: false, error: "Code already used" });
+      }
+
+      let client = null;
+      if (targetClientId) {
+        client = await prisma.client.findFirst({
+          where: {
+            OR: [{ clientCode: targetClientId }, { id: targetClientId }],
+          },
+        });
+      }
+
+      await prisma.licenseCode.update({
+        where: { id: licenseCode.id },
+        data: {
+          status: "USED",
+          redeemedClientId: client ? client.id : null,
+          redeemedAt: now,
+          redeemedByIp: clientIp,
+        },
+      });
+
+      const durationYears = licenseCode.validityYears || 1;
+      const durationMs = durationYears * 365 * 24 * 60 * 60 * 1000;
+      let durationLabel = "1 Year";
+      if (licenseCode.isLifetime) durationLabel = "Lifetime";
+      else if (licenseCode.validityYears) durationLabel = `${licenseCode.validityYears} Year${licenseCode.validityYears > 1 ? "s" : ""}`;
+
+      let baseDate = now;
+      if (client && client.licenseExpiresAt && new Date(client.licenseExpiresAt) > now) {
+        baseDate = new Date(client.licenseExpiresAt);
+      }
+      const stackedExpiry = licenseCode.isLifetime
+        ? new Date(now.getTime() + 99 * 365 * 24 * 60 * 60 * 1000)
+        : new Date(baseDate.getTime() + durationMs);
+
+      if (client) {
+        await prisma.client.update({
+          where: { id: client.id },
+          data: {
+            status: "ACTIVE",
+            licenseExpiresAt: stackedExpiry,
+            isLifetime: licenseCode.isLifetime || client.isLifetime,
+            studentQuota: licenseCode.studentQuotaAdded ? client.studentQuota + licenseCode.studentQuotaAdded : client.studentQuota,
+          },
+        });
+      }
+
+      const resPayload = {
+        success: true,
+        message: `Code redeemed successfully! License extended to ${stackedExpiry.toLocaleDateString('en-GB')}`,
+        code: licenseCode.code,
+        code_type: licenseCode.category,
+        category: licenseCode.category,
+        duration: durationLabel,
+        duration_years: durationYears,
+        is_lifetime: licenseCode.isLifetime,
+        student_quota_added: licenseCode.studentQuotaAdded,
+        client_app_id: targetClientId,
+        status: "active",
+        previous_expiry: baseDate.toISOString(),
+        license_expiry: stackedExpiry.toISOString(),
+        expiry_date: stackedExpiry.toISOString(),
+        days_extended: durationYears * 365,
+        verified_at: now.toISOString(),
+      };
+      return res.status(200).json(resPayload);
+    }
+
+    // 2. Search in License table
+    const directLicense = await prisma.license.findUnique({
+      where: { license_key: cleanCode },
+    });
+
+    if (directLicense) {
+      if (directLicense.status === "Blocked" || directLicense.status === "Suspended") {
+        return res.status(403).json({ success: false, error: `License key is ${directLicense.status.toLowerCase()} by administrator` });
+      }
+
+      const baseDate = directLicense.expiry_date && new Date(directLicense.expiry_date) > now
+        ? new Date(directLicense.expiry_date)
+        : now;
+      const stackedExpiry = new Date(baseDate.getTime() + 365 * 24 * 60 * 60 * 1000);
+
+      await prisma.license.update({
+        where: { id: directLicense.id },
+        data: {
+          status: "Active",
+          expiry_date: stackedExpiry,
+          last_heartbeat: now,
+          ip_address: clientIp,
+        },
+      });
+
+      const resPayload = {
+        success: true,
+        message: `License key redeemed successfully! License extended to ${stackedExpiry.toLocaleDateString('en-GB')}`,
+        code: directLicense.license_key,
+        license_key: directLicense.license_key,
+        code_type: "License",
+        category: "APP_LICENSE",
+        duration: "1 Year",
+        duration_years: 1,
+        is_lifetime: false,
+        client_app_id: targetClientId,
+        status: "active",
+        previous_expiry: baseDate.toISOString(),
+        license_expiry: stackedExpiry.toISOString(),
+        expiry_date: stackedExpiry.toISOString(),
+        days_extended: 365,
+        verified_at: now.toISOString(),
+      };
+      return res.status(200).json(resPayload);
+    }
+
+    return res.status(400).json({ success: false, error: "Invalid Code", message: "Key not found in database or invalid format." });
+  } catch (error) {
+    console.error("❌ License Redeem Error:", error);
+    return res.status(500).json({ success: false, error: error.message || "Failed to redeem code" });
+  }
+}
+
 module.exports = {
   generate,
   verify,
   heartbeat,
+  redeemCode,
   updateStatus,
   listLicenses,
   generateUniqueLicenseKey,

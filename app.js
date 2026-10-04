@@ -99,6 +99,11 @@ app.post(["/api/license/heartbeat", "/heartbeat", "/api/heartbeat"], (req, res) 
   return licenseController.heartbeat(req, res);
 });
 
+// POST /api/vendor/redeem - Redeem code, license key, or voucher
+app.post(["/api/vendor/redeem", "/api/license/redeem", "/redeem"], (req, res) => {
+  return licenseController.redeemCode(req, res);
+});
+
 // POST /api/license/verify - Full verification with killswitch directives
 app.post(["/api/license/verify", "/verify", "/api/verify"], (req, res) => {
   return licenseController.verify(req, res);
