@@ -19,6 +19,10 @@ const allowedOrigins = [
   "http://127.0.0.1:3000",
   "http://localhost:5174",
   "http://localhost:8080",
+  "https://sdb.shebatechnologybd.com",
+  "https://shebatechnologybd.com",
+  "https://shebatech.com.bd",
+  "http://sdb.shebatechnologybd.com",
 ];
 
 if (process.env.CLIENT_URL) {
