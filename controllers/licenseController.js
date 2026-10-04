@@ -1,18 +1,18 @@
 /**
- * License Controller for Vendor SaaS Central Management Engine
- * Provides: /generate (issue keys), /verify (heartbeat check), /update-status (Kill Switch & status management)
+ * Modular Express License Controller for Vendor SaaS Engine
+ * Provides: /generate, /verify, /heartbeat, /update-status, /redeem, /api/license
  */
 
 const { PrismaClient } = require("@prisma/client");
 const crypto = require("crypto");
 const prisma = new PrismaClient();
 
-/**
- * Helper: Generate a unique formatted cryptographic license key
- * e.g. VEND-7A9B-4C2E-8F1K-9X0Z
- */
-function generateUniqueLicenseKey(prefix = "VEND") {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // Base32 unambiguous set
+// ==========================================
+// 1. HELPERS & SECURITY
+// ==========================================
+
+function generateUniqueLicenseKey(prefix = "SHEBA") {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   const generateBlock = (len = 4) => {
     const bytes = crypto.randomBytes(len);
     let block = "";
@@ -24,9 +24,6 @@ function generateUniqueLicenseKey(prefix = "VEND") {
   return `${prefix}-${generateBlock(4)}-${generateBlock(4)}-${generateBlock(4)}-${generateBlock(4)}`;
 }
 
-/**
- * Helper: Validate incoming APP_SECRET from request headers / body
- */
 async function validateAppSecret(req) {
   const headers = req.headers || {};
   const body = req.body || {};
@@ -45,10 +42,7 @@ async function validateAppSecret(req) {
     body.secret_key;
 
   if (!incomingSecret) {
-    return {
-      valid: false,
-      error: "Missing APP_SECRET in request headers (X-App-Secret). Access denied.",
-    };
+    return { valid: false, error: "Missing APP_SECRET in request headers (X-App-Secret). Access denied." };
   }
 
   const validAppSecret = process.env.APP_SECRET || "sheba_vendor_app_secret_2026_x89a";
@@ -58,25 +52,14 @@ async function validateAppSecret(req) {
     return { valid: true };
   }
 
-  // Also verify against database client secret keys if client-specific
   try {
-    const client = await prisma.client.findFirst({
-      where: { secretKey: incomingSecret },
-    });
-    if (client) {
-      return { valid: true, client };
-    }
+    const client = await prisma.client.findFirst({ where: { secretKey: incomingSecret } });
+    if (client) return { valid: true, client };
   } catch (_) {}
 
-  return {
-    valid: false,
-    error: "Invalid APP_SECRET provided. Request is not genuinely from an authorized client application.",
-  };
+  return { valid: false, error: "Invalid APP_SECRET provided." };
 }
 
-/**
- * Helper: Extract Hardware Fingerprint from headers or body
- */
 function extractHardwareFingerprint(req) {
   const headers = req.headers || {};
   const body = req.body || {};
@@ -99,18 +82,18 @@ function extractHardwareFingerprint(req) {
   return fp ? String(fp).trim().toUpperCase() : null;
 }
 
-/**
- * 1. Generate new unique License Key
- * POST /generate or POST /api/license/generate
- */
+// ==========================================
+// 2. CONTROLLER HANDLERS
+// ==========================================
+
 async function generate(req, res) {
   try {
     const body = req.body || {};
     const { client_name, mac_address, validity_years, expiry_date, status = "Active" } = body;
 
     if (!client_name || !client_name.trim()) {
-      const errorPayload = { success: false, error: "client_name is required" };
-      return res.status ? res.status(400).json(errorPayload) : errorPayload;
+      const err = { success: false, error: "client_name is required" };
+      return res.status ? res.status(400).json(err) : err;
     }
 
     let calculatedExpiry = null;
@@ -123,13 +106,11 @@ async function generate(req, res) {
     } else if (validity_years === "Lifetime" || validity_years === 0) {
       calculatedExpiry = null;
     } else {
-      // Default 1 year
       const d = new Date();
       d.setFullYear(d.getFullYear() + 1);
       calculatedExpiry = d;
     }
 
-    // Generate unique key
     let license_key = generateUniqueLicenseKey();
     let isUnique = false;
     while (!isUnique) {
@@ -151,40 +132,22 @@ async function generate(req, res) {
     const responseData = {
       success: true,
       message: "License generated successfully",
-      license: {
-        id: license.id,
-        client_name: license.client_name,
-        license_key: license.license_key,
-        mac_address: license.mac_address,
-        expiry_date: license.expiry_date,
-        status: license.status,
-        createdAt: license.createdAt,
-      },
+      license,
     };
-
-    if (res.status) return res.status(201).json(responseData);
-    return responseData;
+    return res.status ? res.status(201).json(responseData) : responseData;
   } catch (error) {
-    console.error("❌ Generate License Error:", error);
-    const errPayload = { success: false, error: error.message || "Failed to generate license" };
-    if (res.status) return res.status(500).json(errPayload);
-    return errPayload;
+    const err = { success: false, error: error.message || "Failed to generate license" };
+    return res.status ? res.status(500).json(err) : err;
   }
 }
 
-/**
- * 2. Verify License & Client Heartbeat
- * POST /verify or POST /api/license/verify
- */
 async function verify(req, res) {
   try {
-    const clientIp = (req.body && req.body.ip_address) || (req.headers && req.headers["x-forwarded-for"]) || "127.0.0.1";
-    const ipStr = typeof clientIp === "string" ? clientIp.split(",")[0].trim() : "127.0.0.1";
+    const clientIp = (req.headers && req.headers["x-forwarded-for"]) || req.socket?.remoteAddress || "127.0.0.1";
+    const ipStr = String(clientIp).split(",")[0].trim();
 
-    // 1. Verify APP_SECRET from request headers
     const authCheck = await validateAppSecret(req);
     if (!authCheck.valid) {
-      // Log security alert for unauthorized client call
       await prisma.securityAlert.create({
         data: {
           type: "UNAUTHORIZED_REQUEST",
@@ -195,106 +158,65 @@ async function verify(req, res) {
         },
       }).catch(() => null);
 
-      const unauthPayload = {
-        success: false,
-        authorized: false,
-        error: authCheck.error || "Unauthorized: Missing or invalid APP_SECRET header.",
-      };
-      if (res.status) return res.status(401).json(unauthPayload);
-      return unauthPayload;
+      const unauth = { success: false, authorized: false, error: authCheck.error };
+      return res.status ? res.status(401).json(unauth) : unauth;
     }
 
     const body = req.body || {};
-    const { license_key, app_version } = body;
+    const key = (body.license_key || body.licenseKey || "").trim();
 
-    if (!license_key) {
-      const errPayload = { success: false, authorized: false, error: "license_key is required" };
-      return res.status ? res.status(400).json(errPayload) : errPayload;
+    if (!key) {
+      const err = { success: false, authorized: false, error: "license_key is required" };
+      return res.status ? res.status(400).json(err) : err;
     }
 
-    const cleanKey = license_key.trim();
-    const license = await prisma.license.findUnique({
-      where: { license_key: cleanKey },
-    });
-
+    const license = await prisma.license.findUnique({ where: { license_key: key } });
     if (!license) {
-      const notFoundPayload = {
-        success: false,
-        authorized: false,
-        killswitch: true,
-        status: "Invalid",
-        error: "License Key not found or invalid",
-      };
-      return res.status ? res.status(404).json(notFoundPayload) : notFoundPayload;
+      const notFound = { success: false, authorized: false, killswitch: true, status: "Invalid", error: "License Key not found" };
+      return res.status ? res.status(404).json(notFound) : notFound;
     }
 
     const now = new Date();
     let currentStatus = license.status;
 
-    // Check if expired
     if (license.expiry_date && new Date(license.expiry_date) < now) {
       currentStatus = "Expired";
       if (license.status !== "Expired") {
-        await prisma.license.update({
-          where: { id: license.id },
-          data: { status: "Expired" },
-        });
+        await prisma.license.update({ where: { id: license.id }, data: { status: "Expired" } });
       }
     }
 
-    // 2. Hardware Fingerprint Binding & Enforcement
     const incomingFingerprint = extractHardwareFingerprint(req);
-
     if (license.mac_address) {
       const registeredFp = license.mac_address.trim().toUpperCase();
       if (!incomingFingerprint || registeredFp !== incomingFingerprint) {
-        // Log security alert
         await prisma.securityAlert.create({
           data: {
             type: "HARDWARE_MISMATCH",
             severity: "HIGH",
             title: "Hardware Fingerprint Mismatch",
-            description: `Verification blocked for key ${cleanKey}. Bound device: ${registeredFp}, Incoming: ${incomingFingerprint || "NONE"}.`,
-            clientCode: cleanKey,
+            description: `Verification blocked for key ${key}.`,
+            clientCode: key,
             ipAddress: ipStr,
           },
         }).catch(() => null);
 
-        const macMismatchPayload = {
-          success: false,
-          authorized: false,
-          killswitch: true,
-          status: "Blocked",
-          error: "Hardware fingerprint mismatch. License is bound to another machine.",
-          registered_hardware: registeredFp,
-          provided_hardware: incomingFingerprint || null,
-        };
-        return res.status ? res.status(403).json(macMismatchPayload) : macMismatchPayload;
+        const macMismatch = { success: false, authorized: false, killswitch: true, status: "Blocked", error: "Hardware fingerprint mismatch" };
+        return res.status ? res.status(403).json(macMismatch) : macMismatch;
       }
     } else if (!license.mac_address && incomingFingerprint) {
-      // Auto-bind hardware fingerprint on first activation/verification
-      await prisma.license.update({
-        where: { id: license.id },
-        data: { mac_address: incomingFingerprint },
-      });
-      console.log(`🔒 [License Engine] Bound license ${cleanKey} to hardware fingerprint: ${incomingFingerprint}`);
+      await prisma.license.update({ where: { id: license.id }, data: { mac_address: incomingFingerprint } });
     }
 
-    // Update Heartbeat & Telemetry
     await prisma.license.update({
       where: { id: license.id },
-      data: {
-        last_heartbeat: now,
-        ip_address: ipStr,
-        app_version: app_version || license.app_version,
-      },
+      data: { last_heartbeat: now, ip_address: ipStr, app_version: body.app_version || license.app_version },
     });
 
-    // Check Kill Switch / Block Directive
     const isKillswitchActive = currentStatus === "Suspended" || currentStatus === "Blocked" || currentStatus === "Expired";
     const isAuthorized = currentStatus === "Active" && !isKillswitchActive;
 
-    const resultPayload = {
+    const result = {
       success: true,
       authorized: isAuthorized,
       killswitch: isKillswitchActive,
@@ -304,228 +226,69 @@ async function verify(req, res) {
       mac_address: license.mac_address || incomingFingerprint || null,
       expiry_date: license.expiry_date,
       last_heartbeat: now,
-      message: isAuthorized
-        ? "License active and authorized"
-        : `License is ${currentStatus}. Application access restricted.`,
+      message: isAuthorized ? "License active and authorized" : `License is ${currentStatus}. Access restricted.`,
     };
 
     if (res.status) {
-      const statusCode = isAuthorized ? 200 : (currentStatus === "Expired" ? 402 : 403);
-      return res.status(statusCode).json(resultPayload);
+      const code = isAuthorized ? 200 : currentStatus === "Expired" ? 402 : 403;
+      return res.status(code).json(result);
     }
-    return resultPayload;
+    return result;
   } catch (error) {
-    console.error("❌ Verify License Error:", error);
-    const errPayload = { success: false, authorized: false, error: error.message || "License verification failed" };
-    if (res.status) return res.status(500).json(errPayload);
-    return errPayload;
+    const err = { success: false, authorized: false, error: error.message || "Verification failed" };
+    return res.status ? res.status(500).json(err) : err;
   }
 }
 
-/**
- * 3. Update License Status (Active, Suspended, Expired, Blocked) & Direct Kill Switch
- * POST /update-status or POST /api/license/update-status
- */
-async function updateStatus(req, res) {
-  try {
-    const body = req.body || {};
-    const { id, license_key, status, killswitch } = body;
-
-    let targetLicense = null;
-    if (id) {
-      targetLicense = await prisma.license.findUnique({ where: { id } });
-    } else if (license_key) {
-      targetLicense = await prisma.license.findUnique({ where: { license_key: license_key.trim() } });
-    }
-
-    if (!targetLicense) {
-      const errPayload = { success: false, error: "License not found. Provide valid id or license_key." };
-      return res.status ? res.status(404).json(errPayload) : errPayload;
-    }
-
-    let nextStatus = status;
-    if (killswitch !== undefined) {
-      nextStatus = killswitch ? "Suspended" : "Active";
-    }
-
-    if (!nextStatus || !["Active", "Suspended", "Expired", "Blocked"].includes(nextStatus)) {
-      const errPayload = {
-        success: false,
-        error: `Invalid status: ${nextStatus}. Allowed: Active, Suspended, Expired, Blocked.`,
-      };
-      return res.status ? res.status(400).json(errPayload) : errPayload;
-    }
-
-    const updated = await prisma.license.update({
-      where: { id: targetLicense.id },
-      data: { status: nextStatus },
-    });
-
-    const responsePayload = {
-      success: true,
-      message: `License status updated to [${nextStatus}] successfully.`,
-      license: updated,
-      killswitch: nextStatus === "Suspended" || nextStatus === "Blocked" || nextStatus === "Expired",
-    };
-
-    if (res.status) return res.status(200).json(responsePayload);
-    return responsePayload;
-  } catch (error) {
-    console.error("❌ Update Status Error:", error);
-    const errPayload = { success: false, error: error.message || "Failed to update license status" };
-    if (res.status) return res.status(500).json(errPayload);
-    return errPayload;
-  }
-}
-
-/**
- * 4. List all licenses
- * GET /api/license
- */
-async function listLicenses(req, res) {
-  try {
-    const licenses = await prisma.license.findMany({
-      orderBy: { createdAt: "desc" },
-    });
-
-    const responsePayload = {
-      success: true,
-      count: licenses.length,
-      licenses,
-    };
-
-    if (res.status) return res.status(200).json(responsePayload);
-    return responsePayload;
-  } catch (error) {
-    const errPayload = { success: false, error: error.message || "Failed to list licenses" };
-    if (res.status) return res.status(500).json(errPayload);
-    return errPayload;
-  }
-}
-
-/**
- * 5. Client Heartbeat Telemetry
- * POST /heartbeat or POST /api/license/heartbeat
- */
 async function heartbeat(req, res) {
   try {
-    const clientIp = (req.body && req.body.ip_address) || (req.headers && req.headers["x-forwarded-for"]) || "127.0.0.1";
-    const ipStr = typeof clientIp === "string" ? clientIp.split(",")[0].trim() : "127.0.0.1";
+    const clientIp = (req.headers && req.headers["x-forwarded-for"]) || req.socket?.remoteAddress || "127.0.0.1";
+    const ipStr = String(clientIp).split(",")[0].trim();
 
-    // 1. Verify APP_SECRET from request headers
     const authCheck = await validateAppSecret(req);
     if (!authCheck.valid) {
-      await prisma.securityAlert.create({
-        data: {
-          type: "UNAUTHORIZED_REQUEST",
-          severity: "HIGH",
-          title: "Unauthorized Heartbeat Request",
-          description: `Heartbeat ping rejected: ${authCheck.error}`,
-          ipAddress: ipStr,
-        },
-      }).catch(() => null);
-
-      const unauthPayload = {
-        success: false,
-        authorized: false,
-        error: authCheck.error || "Unauthorized: Missing or invalid APP_SECRET header.",
-      };
-      if (res.status) return res.status(401).json(unauthPayload);
-      return unauthPayload;
+      const unauth = { success: false, authorized: false, error: authCheck.error };
+      return res.status ? res.status(401).json(unauth) : unauth;
     }
 
     const body = req.body || {};
-    const {
-      license_key,
-      licenseKey,
-      app_version,
-      statusReported,
-      activeStudentsCount,
-    } = body;
-
-    const key = (license_key || licenseKey || "").trim();
-
+    const key = (body.license_key || body.licenseKey || "").trim();
     if (!key) {
-      const errPayload = { success: false, error: "license_key is required for heartbeat" };
-      if (res.status) return res.status(400).json(errPayload);
-      return errPayload;
+      const err = { success: false, error: "license_key is required for heartbeat" };
+      return res.status ? res.status(400).json(err) : err;
     }
 
-    const license = await prisma.license.findUnique({
-      where: { license_key: key },
-    });
-
+    const license = await prisma.license.findUnique({ where: { license_key: key } });
     if (!license) {
-      const notFoundPayload = {
-        success: false,
-        authorized: false,
-        killswitch: true,
-        live_status: "INVALID",
-        error: "License Key not found",
-      };
-      if (res.status) return res.status(404).json(notFoundPayload);
-      return notFoundPayload;
+      const notFound = { success: false, authorized: false, killswitch: true, live_status: "INVALID", error: "License Key not found" };
+      return res.status ? res.status(404).json(notFound) : notFound;
     }
 
     const now = new Date();
     let currentStatus = license.status;
 
-    // Check expiry
     if (license.expiry_date && new Date(license.expiry_date) < now) {
       currentStatus = "Expired";
       if (license.status !== "Expired") {
-        await prisma.license.update({
-          where: { id: license.id },
-          data: { status: "Expired" },
-        });
+        await prisma.license.update({ where: { id: license.id }, data: { status: "Expired" } });
       }
     }
 
-    // 2. Hardware Fingerprint Enforcement & Binding
     const incomingFingerprint = extractHardwareFingerprint(req);
-
     if (license.mac_address) {
       const registeredFp = license.mac_address.trim().toUpperCase();
       if (!incomingFingerprint || registeredFp !== incomingFingerprint) {
-        // Log security alert
-        await prisma.securityAlert.create({
-          data: {
-            type: "HARDWARE_MISMATCH",
-            severity: "HIGH",
-            title: "Hardware Fingerprint Mismatch on Heartbeat",
-            description: `Heartbeat rejected for key ${key}. Bound device: ${registeredFp}, Incoming: ${incomingFingerprint || "NONE"}.`,
-            clientCode: key,
-            ipAddress: ipStr,
-          },
-        }).catch(() => null);
-
-        const macMismatchPayload = {
-          success: false,
-          authorized: false,
-          killswitch: true,
-          live_status: "BLOCKED",
-          status: "Blocked",
-          error: "Hardware fingerprint mismatch. License is bound to another machine.",
-          registered_hardware: registeredFp,
-          provided_hardware: incomingFingerprint || null,
-        };
-        if (res.status) return res.status(403).json(macMismatchPayload);
-        return macMismatchPayload;
+        const mismatch = { success: false, authorized: false, killswitch: true, live_status: "BLOCKED", status: "Blocked", error: "Hardware fingerprint mismatch" };
+        return res.status ? res.status(403).json(mismatch) : mismatch;
       }
     } else if (!license.mac_address && incomingFingerprint) {
-      // Auto-bind hardware fingerprint on first heartbeat
-      await prisma.license.update({
-        where: { id: license.id },
-        data: { mac_address: incomingFingerprint },
-      });
-      console.log(`🔒 [License Engine] Bound license ${key} to hardware fingerprint: ${incomingFingerprint}`);
+      await prisma.license.update({ where: { id: license.id }, data: { mac_address: incomingFingerprint } });
     }
 
     const isKillswitchActive = currentStatus === "Suspended" || currentStatus === "Blocked" || currentStatus === "Expired";
     const isAuthorized = currentStatus === "Active" && !isKillswitchActive;
     const calculatedLiveStatus = isKillswitchActive ? (currentStatus === "Expired" ? "WARNING" : "BLOCKED") : "ONLINE";
 
-    // Update last_sync and live_status in database
     const updated = await prisma.license.update({
       where: { id: license.id },
       data: {
@@ -533,7 +296,7 @@ async function heartbeat(req, res) {
         last_heartbeat: now,
         live_status: calculatedLiveStatus,
         ip_address: ipStr,
-        app_version: app_version || license.app_version,
+        app_version: body.app_version || license.app_version,
       },
     });
 
@@ -552,15 +315,13 @@ async function heartbeat(req, res) {
     };
 
     if (res.status) {
-      const statusCode = isAuthorized ? 200 : (currentStatus === "Expired" ? 402 : 403);
+      const statusCode = isAuthorized ? 200 : currentStatus === "Expired" ? 402 : 403;
       return res.status(statusCode).json(responsePayload);
     }
     return responsePayload;
   } catch (error) {
-    console.error("❌ License Heartbeat Error:", error);
-    const errPayload = { success: false, error: error.message || "Failed to process heartbeat" };
-    if (res.status) return res.status(500).json(errPayload);
-    return errPayload;
+    const err = { success: false, error: error.message || "Failed to process heartbeat" };
+    return res.status ? res.status(500).json(err) : err;
   }
 }
 
@@ -603,9 +364,7 @@ async function redeemCode(req, res) {
       let client = null;
       if (targetClientId) {
         client = await prisma.client.findFirst({
-          where: {
-            OR: [{ clientCode: targetClientId }, { id: targetClientId }],
-          },
+          where: { OR: [{ clientCode: targetClientId }, { id: targetClientId }] },
         });
       }
 
@@ -647,33 +406,31 @@ async function redeemCode(req, res) {
 
       const resPayload = {
         success: true,
-        message: `Code redeemed successfully! License extended to ${stackedExpiry.toLocaleDateString('en-GB')}`,
+        message: `Code redeemed successfully! License extended to ${stackedExpiry.toLocaleDateString("en-GB")}`,
         code: licenseCode.code,
-        code_type: licenseCode.category,
         category: licenseCode.category,
         duration: durationLabel,
-        duration_years: durationYears,
         is_lifetime: licenseCode.isLifetime,
-        student_quota_added: licenseCode.studentQuotaAdded,
-        client_app_id: targetClientId,
         status: "active",
-        previous_expiry: baseDate.toISOString(),
         license_expiry: stackedExpiry.toISOString(),
-        expiry_date: stackedExpiry.toISOString(),
-        days_extended: durationYears * 365,
-        verified_at: now.toISOString(),
       };
-      return res.status(200).json(resPayload);
+      return res.status ? res.status(200).json(resPayload) : resPayload;
     }
 
-    // 2. Search in License table
-    const directLicense = await prisma.license.findUnique({
-      where: { license_key: cleanCode },
+    // 2. Search in License table (Direct License Keys)
+    const directLicense = await prisma.license.findFirst({
+      where: {
+        OR: [
+          { license_key: cleanCode },
+          { license_key: { equals: cleanCode, mode: "insensitive" } },
+        ],
+      },
     });
 
     if (directLicense) {
       if (directLicense.status === "Blocked" || directLicense.status === "Suspended") {
-        return res.status(403).json({ success: false, error: `License key is ${directLicense.status.toLowerCase()} by administrator` });
+        const errPayload = { success: false, error: `License key is ${directLicense.status.toLowerCase()}` };
+        return res.status ? res.status(403).json(errPayload) : errPayload;
       }
 
       const baseDate = directLicense.expiry_date && new Date(directLicense.expiry_date) > now
@@ -683,39 +440,67 @@ async function redeemCode(req, res) {
 
       await prisma.license.update({
         where: { id: directLicense.id },
-        data: {
-          status: "Active",
-          expiry_date: stackedExpiry,
-          last_heartbeat: now,
-          ip_address: clientIp,
-        },
+        data: { status: "Active", expiry_date: stackedExpiry, last_heartbeat: now, ip_address: clientIp },
       });
 
       const resPayload = {
         success: true,
-        message: `License key redeemed successfully! License extended to ${stackedExpiry.toLocaleDateString('en-GB')}`,
+        message: `License key redeemed successfully! License extended to ${stackedExpiry.toLocaleDateString("en-GB")}`,
         code: directLicense.license_key,
         license_key: directLicense.license_key,
-        code_type: "License",
-        category: "APP_LICENSE",
-        duration: "1 Year",
-        duration_years: 1,
-        is_lifetime: false,
-        client_app_id: targetClientId,
         status: "active",
-        previous_expiry: baseDate.toISOString(),
         license_expiry: stackedExpiry.toISOString(),
-        expiry_date: stackedExpiry.toISOString(),
-        days_extended: 365,
-        verified_at: now.toISOString(),
       };
-      return res.status(200).json(resPayload);
+      return res.status ? res.status(200).json(resPayload) : resPayload;
     }
 
-    return res.status(400).json({ success: false, error: "Invalid Code", message: "Key not found in database or invalid format." });
+    const notFoundPayload = { success: false, error: "Key not found in database" };
+    return res.status ? res.status(404).json(notFoundPayload) : notFoundPayload;
   } catch (error) {
-    console.error("❌ License Redeem Error:", error);
-    return res.status(500).json({ success: false, error: error.message || "Failed to redeem code" });
+    const errPayload = { success: false, error: error.message || "Failed to redeem code" };
+    return res.status ? res.status(500).json(errPayload) : errPayload;
+  }
+}
+
+async function updateStatus(req, res) {
+  try {
+    const body = req.body || {};
+    const { id, license_key, status, killswitch } = body;
+
+    let target = null;
+    if (id) target = await prisma.license.findUnique({ where: { id } });
+    else if (license_key) target = await prisma.license.findUnique({ where: { license_key: license_key.trim() } });
+
+    if (!target) {
+      const err = { success: false, error: "License not found." };
+      return res.status ? res.status(404).json(err) : err;
+    }
+
+    let nextStatus = status;
+    if (killswitch !== undefined) nextStatus = killswitch ? "Suspended" : "Active";
+
+    if (!nextStatus || !["Active", "Suspended", "Expired", "Blocked"].includes(nextStatus)) {
+      const err = { success: false, error: `Invalid status: ${nextStatus}` };
+      return res.status ? res.status(400).json(err) : err;
+    }
+
+    const updated = await prisma.license.update({ where: { id: target.id }, data: { status: nextStatus } });
+    const payload = { success: true, message: `Status updated to [${nextStatus}]`, license: updated };
+    return res.status ? res.status(200).json(payload) : payload;
+  } catch (error) {
+    const err = { success: false, error: error.message || "Failed to update status" };
+    return res.status ? res.status(500).json(err) : err;
+  }
+}
+
+async function listLicenses(req, res) {
+  try {
+    const licenses = await prisma.license.findMany({ orderBy: { createdAt: "desc" } });
+    const payload = { success: true, count: licenses.length, licenses };
+    return res.status ? res.status(200).json(payload) : payload;
+  } catch (error) {
+    const err = { success: false, error: error.message || "Failed to list licenses" };
+    return res.status ? res.status(500).json(err) : err;
   }
 }
 
@@ -730,5 +515,3 @@ module.exports = {
   validateAppSecret,
   extractHardwareFingerprint,
 };
-
-
